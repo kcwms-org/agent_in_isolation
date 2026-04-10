@@ -1,6 +1,6 @@
 # Plan: Pluggable Agent Backend — Issue #1
 
-**Status:** In progress
+**Status:** Done
 
 ## Context
 
