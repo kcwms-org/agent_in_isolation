@@ -54,12 +54,13 @@ class Agent:
         self.audit_log.append(entry)
         logger.info(f"[{repo}] {event_type}: {outcome} {details}")
 
-    def _run_command(self, cmd: list, cwd: Optional[str] = None, timeout: int = 30) -> tuple:
+    def _run_command(self, cmd: list, cwd: Optional[str] = None, timeout: int = 30, stdin_text: Optional[str] = None) -> tuple:
         """Execute a shell command, return (returncode, stdout, stderr)."""
         try:
             result = subprocess.run(
                 cmd,
                 cwd=cwd,
+                input=stdin_text,
                 capture_output=True,
                 text=True,
                 timeout=timeout
@@ -170,9 +171,9 @@ class Agent:
             logger.error(f"Error checking PRs for {repo_name}: {e}")
             return []
 
-    def invoke_claude(self, repo_config: dict, handler_type: str, context: dict, attempt: int = 1) -> bool:
+    def invoke_agent(self, repo_config: dict, handler_type: str, context: dict, attempt: int = 1) -> bool:
         """
-        Invoke Claude CLI with appropriate prompt template.
+        Invoke configured AI agent backend with appropriate prompt template.
         Returns True if successful, False otherwise.
         """
         repo_path = self._expand_path(repo_config['local_path'])
@@ -192,30 +193,58 @@ class Agent:
             for key, value in context.items():
                 prompt = prompt.replace(f'{{{{{key}}}}}', str(value))
 
-            # Invoke claude
-            max_timeout = self.config.get('agent', {}).get('claude_timeout_seconds', 300)
-            cmd = [
-                'claude',
-                '--dangerously-skip-permissions',
-                '-p', prompt
-            ]
+            # Get agent backend config
+            agent_config = self.config.get('agent', {})
+            backend_config = agent_config.get('backend', {})
+            backend_name = backend_config.get('name', 'claude')
+            cli_path = backend_config.get('cli_path', 'claude')
+            cli_flags = backend_config.get('cli_flags', ['--dangerously-skip-permissions'])
+            prompt_arg = backend_config.get('prompt_arg', '-p')
 
+            # Get timeout (with backward compat for old config key)
+            timeout = agent_config.get('timeout_seconds')
+            if timeout is None:
+                timeout = agent_config.get('claude_timeout_seconds', 300)
+                if agent_config.get('claude_timeout_seconds'):
+                    logger.warning("Config key 'claude_timeout_seconds' is deprecated, use 'timeout_seconds' instead")
+
+            # Build command based on backend config
+            cmd = [cli_path] + list(cli_flags)
+            stdin_input = None
+
+            if prompt_arg:
+                # Pass prompt as command-line argument
+                cmd += [prompt_arg, prompt]
+            else:
+                # Pass prompt via stdin
+                stdin_input = prompt
+
+            # Invoke agent
             returncode, stdout, stderr = self._run_command(
                 cmd,
                 cwd=repo_path,
-                timeout=max_timeout
+                timeout=timeout,
+                stdin_text=stdin_input
             )
 
             if returncode == 0:
-                self._log_action(repo_name, handler_type, 'success', f'Attempt {attempt}')
+                self._log_action(repo_name, f'{handler_type}[{backend_name}]', 'success', f'Attempt {attempt}')
                 return True
             else:
-                self._log_action(repo_name, handler_type, 'failed', f'Attempt {attempt}: {stderr[:100]}')
+                self._log_action(repo_name, f'{handler_type}[{backend_name}]', 'failed', f'Attempt {attempt}: {stderr[:100]}')
                 return False
         except Exception as e:
-            logger.error(f"Error invoking Claude for {repo_name}: {e}")
+            logger.error(f"Error invoking agent for {repo_name}: {e}")
             self._log_action(repo_name, handler_type, 'error', str(e)[:100])
             return False
+
+    def invoke_claude(self, repo_config: dict, handler_type: str, context: dict, attempt: int = 1) -> bool:
+        """
+        Deprecated: Use invoke_agent instead.
+        Kept for backward compatibility.
+        """
+        logger.warning("invoke_claude() is deprecated, use invoke_agent() instead")
+        return self.invoke_agent(repo_config, handler_type, context, attempt)
 
     def handle_ci_failure(self, repo_config: dict, run_info: dict) -> None:
         """Handle a CI failure event."""
@@ -243,7 +272,7 @@ class Agent:
             'log': f"CI run {run_info.get('number')} failed"
         }
 
-        success = self.invoke_claude(repo_config, 'fix_ci_failure', context, attempt)
+        success = self.invoke_agent(repo_config, 'fix_ci_failure', context, attempt)
         if not success and attempt < max_attempts:
             logger.info(f"Will retry CI fix on next poll cycle")
 
@@ -261,7 +290,7 @@ class Agent:
             'body': issue_info.get('body', '')
         }
 
-        self.invoke_claude(repo_config, 'triage_issue', context)
+        self.invoke_agent(repo_config, 'triage_issue', context)
 
     def handle_pr_monitor(self, repo_config: dict, pr_info: dict) -> None:
         """Handle PR monitoring and potential merge."""
@@ -291,7 +320,7 @@ class Agent:
             'base_branch': base_branch
         }
 
-        self.invoke_claude(repo_config, 'monitor_pr', context)
+        self.invoke_agent(repo_config, 'monitor_pr', context)
 
     def poll(self) -> None:
         """Main polling loop."""

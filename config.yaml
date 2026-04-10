@@ -8,9 +8,17 @@ repos:
       pr_monitor: true
 
 agent:
+  backend:
+    name: claude
+    cli_path: claude
+    cli_flags:
+      - --dangerously-skip-permissions
+    prompt_arg: -p
   poll_interval_seconds: 300
   max_fix_attempts: 3
-  claude_timeout_seconds: 300
+  timeout_seconds: 300
+  # Backward compat: claude_timeout_seconds is deprecated, use timeout_seconds instead
+  # claude_timeout_seconds: 300
 
 limits:
   never_push_to: [main, master]
