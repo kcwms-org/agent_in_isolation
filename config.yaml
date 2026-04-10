@@ -1,0 +1,18 @@
+repos:
+  - org: kcwms-org
+    name: kvcdr-carb-calculator-client
+    local_path: ~/repos/github/kvcdr-carb-calculator-client
+    watch:
+      ci_failures: true
+      new_issues: true
+      pr_monitor: true
+
+agent:
+  poll_interval_seconds: 300
+  max_fix_attempts: 3
+  claude_timeout_seconds: 300
+
+limits:
+  never_push_to: [main, master]
+  never_delete_branches: true
+  never_merge_without_green_ci: true

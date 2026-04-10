@@ -1,0 +1,30 @@
+[Unit]
+Description=Autonomous GitHub CI/Issue Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/opt/agent_in_isolation
+ExecStart=/usr/bin/python3 /opt/agent_in_isolation/agent.py --config /etc/agent_in_isolation/config.yaml
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectDevices=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+
+# Environment
+Environment="ANTHROPIC_API_KEY=%i"
+
+[Install]
+WantedBy=multi-user.target
