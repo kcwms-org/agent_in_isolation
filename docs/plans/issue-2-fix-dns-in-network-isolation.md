@@ -1,6 +1,6 @@
 # Plan: Fix DNS Blocking in Network Isolation — Issue #2
 
-**Status:** In Progress
+**Status:** Done — merged via PR #3
 
 ## Context
 

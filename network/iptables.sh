@@ -32,6 +32,13 @@ iptables -A OUTPUT -d api.anthropic.com -p tcp --dport 443 -j ACCEPT
 echo "Allowing localhost..."
 iptables -A OUTPUT -o lo -j ACCEPT
 
+# Allow DNS to system resolver(s) from /etc/resolv.conf
+echo "Allowing DNS (UDP+TCP port 53) to system resolver(s)..."
+while IFS= read -r ns; do
+    iptables -A OUTPUT -d "$ns" -p udp --dport 53 -j ACCEPT
+    iptables -A OUTPUT -d "$ns" -p tcp --dport 53 -j ACCEPT
+done < <(awk '/^nameserver/ { print $2 }' /etc/resolv.conf)
+
 # Block everything else
 echo "Blocking all other outbound traffic..."
 iptables -A OUTPUT -j DROP
