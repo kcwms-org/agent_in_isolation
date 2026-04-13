@@ -27,7 +27,8 @@ agent_in_isolation/
 │   ├── triage_issue.md      # Claude prompt for issue triage
 │   └── monitor_pr.md        # Claude prompt for PR merging
 ├── network/
-│   └── iptables.sh          # Network isolation setup
+│   ├── iptables.sh          # Network isolation setup
+│   └── iptables-restore.sh  # Restore rules (handles missing backup)
 └── systemd/
     └── agent.service        # Systemd unit (optional)
 ```
@@ -120,17 +121,33 @@ To restrict the agent to GitHub and Anthropic APIs only:
 ```bash
 # Setup iptables rules (requires root)
 sudo ./network/iptables.sh
-
-# Verify isolation
-curl https://google.com      # Should fail
-gh api /user                 # Should succeed
 ```
 
-To restore original iptables:
+The script allows:
+- Outbound TCP 443 to `api.github.com`, `github.com`, and `api.anthropic.com`
+- Outbound UDP/TCP 53 to the system's configured DNS resolver(s) (read from `/etc/resolv.conf` at runtime)
+- All established/related connections
+- Loopback traffic
+
+Everything else is dropped.
+
+### Verify isolation
 
 ```bash
-sudo iptables-restore < /tmp/iptables-backup.txt
+# Should succeed (GitHub API over DNS + HTTPS)
+gh api /user
+
+# Should fail (blocked destination)
+curl --max-time 5 https://google.com   # Connection timed out
 ```
+
+### Restore original rules
+
+```bash
+sudo ./network/iptables-restore.sh
+```
+
+> **Note**: The backup is written to `/tmp/iptables-backup.txt`, which is cleared on reboot. If the backup is missing, the restore script flushes the OUTPUT chain and sets the policy to ACCEPT.
 
 ## How It Works
 
@@ -203,12 +220,19 @@ echo $ANTHROPIC_API_KEY
 
 ### Network isolation blocking requests
 
+If you see `Temporary failure in name resolution`, DNS port 53 may be blocked
+or the system resolver has changed since `iptables.sh` was run. Re-run the
+script to re-detect `/etc/resolv.conf` and rebuild the rules.
+
 ```bash
 # Check current iptables rules
 sudo iptables -L OUTPUT -n -v
 
-# Restore original rules and check if issue persists
-sudo iptables-restore < /tmp/iptables-backup.txt
+# Re-run isolation setup to rebuild rules (re-reads /etc/resolv.conf)
+sudo ./network/iptables.sh
+
+# Or restore original rules entirely
+sudo ./network/iptables-restore.sh
 ```
 
 ## Development Notes
