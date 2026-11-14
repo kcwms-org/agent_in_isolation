@@ -33,6 +33,171 @@ agent_in_isolation/
     └── agent.service        # Systemd unit (optional)
 ```
 
+## Server Requirements
+
+Recommended host (e.g. a DigitalOcean Droplet):
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| vCPU | 1 | 2 |
+| RAM | 2 GB (+2 GB swap) | 4 GB |
+| Disk | 25 GB | 50–80 GB |
+| OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
+
+Recommended: Basic Droplet, 2 vCPU / 4 GB RAM / 80 GB SSD.
+
+The agent process itself is lightweight. Sizing is driven by the `claude` CLI
+(~300–500 MB per invocation) and by builds/tests that Claude runs in the
+monitored repos (can spike to 1–2 GB). Move up to 4 vCPU / 8 GB if you monitor
+several repos or repos with heavy builds.
+
+Networking: outbound HTTPS only. Open no inbound ports except SSH, and restrict
+SSH to your IP with a cloud firewall.
+
+## FIRST STEPS
+
+One-time server configuration, in order. Run as a sudo-capable user unless noted.
+
+### 1. Update the system and create the service user
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl ca-certificates build-essential python3 python3-pip python3-venv iptables logrotate
+
+# Non-root user that runs the agent
+sudo adduser --disabled-password --gecos "" agent
+```
+
+Optional but recommended on a 2 GB droplet — add swap:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+### 2. Harden SSH and enable a firewall
+
+Use key-only SSH and allow only SSH inbound (also add a cloud firewall restricted to your IP):
+
+```bash
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
+sudo ufw allow OpenSSH && sudo ufw enable
+```
+
+### 3. Install the GitHub CLI
+
+```bash
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install -y gh
+```
+
+### 4. Install Node.js and the Claude CLI
+
+The Claude CLI requires Node.js. Node is also commonly needed by the repos being monitored.
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g @anthropic-ai/claude-code
+claude --version
+```
+
+Also install any other toolchain your monitored repos need (e.g. .NET SDK, Java, Docker)
+so Claude can build and run their tests.
+
+### 5. Authenticate as the `agent` user
+
+```bash
+sudo -iu agent
+
+# GitHub: use a fine-grained token scoped to only the monitored repos
+# (contents, pull requests, issues, actions: read/write)
+gh auth login        # or: echo "<token>" | gh auth login --with-token
+gh auth status
+
+# Anthropic
+export ANTHROPIC_API_KEY=<your key>   # persist via the systemd unit / env file, not .bashrc on shared hosts
+claude --version
+```
+
+Also configure git identity for commits made by the agent:
+
+```bash
+git config --global user.name "agent"
+git config --global user.email "agent@example.com"
+```
+
+### 6. Clone the agent and the monitored repos
+
+```bash
+# still as the agent user
+mkdir -p ~/repos/github && cd ~/repos/github
+git clone <this-repo-url> agent_in_isolation
+git clone https://github.com/<org>/<monitored-repo>.git
+
+cd agent_in_isolation
+pip install -r requirements.txt --user   # or use a venv
+cp config.yaml config.yaml.local         # set org/name/local_path for each repo
+```
+
+Pre-install each monitored repo's dependencies now (e.g. `npm ci`) **before** enabling
+network isolation — see the next step.
+
+### 7. Smoke-test before isolating the network
+
+```bash
+gh run list --repo <org>/<monitored-repo>
+echo "Say hello" | claude -p
+python3 agent.py --config config.yaml.local   # watch agent.log, Ctrl-C when satisfied
+```
+
+### 8. Enable network isolation
+
+```bash
+sudo ./network/iptables.sh
+```
+
+Isolation only allows `github.com`, `api.github.com`, `api.anthropic.com` and DNS.
+Package registries (npm, PyPI, NuGet, etc.) will be **blocked**, so any repo
+dependencies must be installed in step 6. If a monitored repo's CI fix needs new
+dependencies, either allow the registry in `network/iptables.sh` or re-run
+without isolation temporarily. Verify with the commands in
+[Verify isolation](#verify-isolation).
+
+Note: iptables rules are not persistent across reboot. Persist them with
+`sudo apt install iptables-persistent && sudo netfilter-persistent save`, or re-run
+the script on boot.
+
+### 9. Install as a service
+
+Follow [Production (Systemd)](#production-systemd). Then add log rotation:
+
+```bash
+sudo tee /etc/logrotate.d/agent_in_isolation <<'EOF'
+/opt/agent_in_isolation/agent.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+```
+
+> **Check before enabling the unit**: `systemd/agent.service` sets `ProtectHome=true`
+> and `ProtectSystem=strict`. If your repos and `gh`/`claude` credentials live under
+> `/home/agent`, the agent will not be able to read or write them. Either keep the
+> repos elsewhere and add them to `ReadWritePaths=`, or relax `ProtectHome`. Also
+> confirm how `ANTHROPIC_API_KEY` is supplied (the unit currently has
+> `Environment="ANTHROPIC_API_KEY=%i"`, which is a template placeholder);
+> an `EnvironmentFile=` with mode `600` is the safer option.
+
 ## Setup
 
 ### Requirements
