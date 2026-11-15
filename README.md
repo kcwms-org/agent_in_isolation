@@ -177,7 +177,9 @@ git clone <this-repo-url> agent_in_isolation
 git clone https://github.com/<org>/<monitored-repo>.git
 
 cd agent_in_isolation
-pip install -r requirements.txt --user   # or use a venv
+# Ubuntu 24.04 blocks system-wide pip installs (PEP 668), so use a venv
+python3 -m venv .venv                    # needs: sudo apt install -y python3-venv
+.venv/bin/pip install -r requirements.txt
 cp config.yaml config.yaml.local         # set org/name/local_path for each repo
 ```
 
@@ -189,7 +191,7 @@ network isolation — see the next step.
 ```bash
 gh run list --repo <org>/<monitored-repo>
 echo "Say hello" | claude -p
-python3 agent.py --config config.yaml.local   # watch agent.log, Ctrl-C when satisfied
+.venv/bin/python agent.py --config config.yaml.local   # watch agent.log, Ctrl-C when satisfied
 ```
 
 ### 8. Enable network isolation
@@ -248,7 +250,8 @@ EOF
 # Clone and install dependencies
 git clone <repo> agent_in_isolation
 cd agent_in_isolation
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
 # Configure repos to monitor
 cp config.yaml config.yaml.local
@@ -289,7 +292,8 @@ limits:
 chmod +x agent.py
 
 # Run agent
-python3 agent.py --config config.yaml
+# (or: source .venv/bin/activate, then python3 agent.py ...)
+.venv/bin/python agent.py --config config.yaml
 
 # View logs in real-time
 tail -f agent.log
@@ -301,6 +305,11 @@ tail -f agent.log
 # Copy to system location
 sudo cp -r . /opt/agent_in_isolation
 sudo chown -R agent:agent /opt/agent_in_isolation
+# venvs are not relocatable: recreate it in the new location
+sudo -u agent rm -rf /opt/agent_in_isolation/.venv
+sudo -u agent python3 -m venv /opt/agent_in_isolation/.venv
+sudo -u agent /opt/agent_in_isolation/.venv/bin/pip install -r /opt/agent_in_isolation/requirements.txt
+sudo mkdir -p /etc/agent_in_isolation
 sudo cp config.yaml /etc/agent_in_isolation/config.yaml
 
 # Install systemd unit
