@@ -89,11 +89,15 @@ sudo ufw allow OpenSSH && sudo ufw enable
 ### 3. Install the GitHub CLI
 
 ```bash
-sudo mkdir -p -m 755 /etc/apt/keyrings
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-sudo apt update && sudo apt install -y gh
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
+	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&& cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+	&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+	&& sudo apt update \
+	&& sudo apt install gh -y
 ```
 
 ### 4. Install Node.js and the Claude CLI
@@ -103,7 +107,7 @@ The Claude CLI requires Node.js. Node is also commonly needed by the repos being
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt install -y nodejs
-sudo npm install -g @anthropic-ai/claude-code
+sudo curl -fsSL https://claude.ai/install.sh | bash
 claude --version
 ```
 
@@ -116,7 +120,7 @@ so Claude can build and run their tests.
 sudo -iu agent
 
 # GitHub: use a fine-grained token scoped to only the monitored repos
-# (contents, pull requests, issues, actions: read/write)
+# (see "GitHub token permissions" below)
 gh auth login        # or: echo "<token>" | gh auth login --with-token
 gh auth status
 
@@ -124,6 +128,33 @@ gh auth status
 export ANTHROPIC_API_KEY=<your key>   # persist via the systemd unit / env file, not .bashrc on shared hosts
 claude --version
 ```
+
+#### GitHub token permissions
+
+Create the token at Settings → Developer settings → Personal access tokens →
+Fine-grained tokens. Set **Resource owner** to the org that owns the repos, choose
+**Only select repositories** (the monitored repos), and set a sensible expiration —
+the agent will start failing on every poll once the token expires.
+
+Repository permissions (add the non-default ones via **Add permissions**):
+
+| Permission | Access | Used for |
+|---|---|---|
+| Contents | Read and write | Pushing fix commits and branches |
+| Issues | Read and write | Triage comments, labels (`needs-human`) |
+| Pull requests | Read and write | Listing/viewing PRs, merging, PR comments |
+| Actions | Read-only | `gh run list` / `gh run view` failure logs |
+| Commit statuses | Read-only | CI status on PRs |
+| Workflows | Read and write | Pushing fixes to `.github/workflows/*` files |
+| Metadata | Read-only | Required; added automatically |
+
+Notes:
+
+- There is no "Checks" permission for fine-grained tokens (it is GitHub Apps only); it is not needed.
+- Without **Workflows**, GitHub rejects any push that touches `.github/workflows/`. Drop it
+  if you don't want the agent editing CI definitions — those failures will then end in `needs-human`.
+- Branch protection / rulesets on `main` (require PR checks) are the way to enforce the
+  merge rules on GitHub's side; the token cannot.
 
 Also configure git identity for commits made by the agent:
 
