@@ -150,7 +150,12 @@ Repository permissions (add the non-default ones via **Add permissions**):
 
 Notes:
 
-- There is no "Checks" permission for fine-grained tokens (it is GitHub Apps only); it is not needed.
+- There is no "Checks" permission for fine-grained tokens (it is GitHub Apps only), and the
+  agent's `gh` calls should not need it. **However, it may still be a cause of failure:** the
+  PR monitor reads CI status via `gh pr view`, which can include check runs. If PRs appear to
+  have no CI status (or `never_merge_without_green_ci` blocks PRs whose CI is actually green),
+  suspect the missing Checks access. The fallback is a classic token with the `repo` (and
+  `workflow`) scopes, which can read check runs.
 - Without **Workflows**, GitHub rejects any push that touches `.github/workflows/`. Drop it
   if you don't want the agent editing CI definitions — those failures will then end in `needs-human`.
 - Branch protection / rulesets on `main` (require PR checks) are the way to enforce the
