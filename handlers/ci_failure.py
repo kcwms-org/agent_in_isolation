@@ -26,7 +26,7 @@ class CIFailureHandler:
             cmd = [
                 'gh', 'run', 'list',
                 '--repo', f'{org}/{repo}',
-                '--json', 'number,conclusion,headBranch,title,createdAt',
+                '--json', 'number,conclusion,headBranch,displayTitle,createdAt',
                 '--limit', '20'
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)

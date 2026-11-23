@@ -95,7 +95,7 @@ class Agent:
             cmd = [
                 'gh', 'run', 'list',
                 '--repo', f"{repo_config['org']}/{repo_name}",
-                '--json', 'number,conclusion,headBranch,title',
+                '--json', 'number,conclusion,headBranch,displayTitle',
                 '--limit', '10'
             ]
             returncode, stdout, stderr = self._run_command(cmd)
