@@ -114,6 +114,19 @@ claude --version
 Also install any other toolchain your monitored repos need (e.g. .NET SDK, Java, Docker)
 so Claude can build and run their tests.
 
+#### Other Tools To Install
+
+- Docker
+   1. Install docker from https://docs.docker.com/engine/install/ubuntu/
+   
+       ```bash
+       curl -fsSL https://get.docker.com | sudo sh
+       ```
+
+   2. run the post installation steps found at https://docs.docker.com/engine/install/ubuntu/#next-steps, to allow the agent user to run commands without sudo
+
+- TBD
+
 ### 5. Authenticate as the `agent` user
 
 ```bash
