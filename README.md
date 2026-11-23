@@ -33,6 +33,222 @@ agent_in_isolation/
     └── agent.service        # Systemd unit (optional)
 ```
 
+## Server Requirements
+
+Recommended host (e.g. a DigitalOcean Droplet):
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| vCPU | 1 | 2 |
+| RAM | 2 GB (+2 GB swap) | 4 GB |
+| Disk | 25 GB | 50–80 GB |
+| OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
+
+Recommended: Basic Droplet, 2 vCPU / 4 GB RAM / 80 GB SSD.
+
+The agent process itself is lightweight. Sizing is driven by the `claude` CLI
+(~300–500 MB per invocation) and by builds/tests that Claude runs in the
+monitored repos (can spike to 1–2 GB). Move up to 4 vCPU / 8 GB if you monitor
+several repos or repos with heavy builds.
+
+Networking: outbound HTTPS only. Open no inbound ports except SSH, and restrict
+SSH to your IP with a cloud firewall.
+
+## FIRST STEPS
+
+One-time server configuration, in order. Run as a sudo-capable user unless noted.
+
+### 1. Update the system and create the service user
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl ca-certificates build-essential python3 python3-pip python3-venv iptables logrotate
+
+# Non-root user that runs the agent
+sudo adduser --disabled-password --gecos "" agent
+```
+
+Optional but recommended on a 2 GB droplet — add swap:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+### 2. Harden SSH and enable a firewall
+
+Use key-only SSH and allow only SSH inbound (also add a cloud firewall restricted to your IP):
+
+```bash
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
+sudo ufw allow OpenSSH && sudo ufw enable
+```
+
+### 3. Install the GitHub CLI
+
+```bash
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
+	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&& cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+	&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+	&& sudo apt update \
+	&& sudo apt install gh -y
+```
+
+### 4. Install Node.js and the Claude CLI
+
+The Claude CLI requires Node.js. Node is also commonly needed by the repos being monitored.
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo curl -fsSL https://claude.ai/install.sh | bash
+claude --version
+```
+
+Also install any other toolchain your monitored repos need (e.g. .NET SDK, Java, Docker)
+so Claude can build and run their tests.
+
+#### Other Tools To Install
+
+- Docker
+   1. Install docker from https://docs.docker.com/engine/install/ubuntu/
+   
+       ```bash
+       curl -fsSL https://get.docker.com | sudo sh
+       ```
+
+   2. run the post installation steps found at https://docs.docker.com/engine/install/ubuntu/#next-steps, to allow the agent user to run commands without sudo
+
+- TBD
+
+### 5. Authenticate as the `agent` user
+
+```bash
+sudo -iu agent
+
+# GitHub: use a fine-grained token scoped to only the monitored repos
+# (see "GitHub token permissions" below)
+gh auth login        # or: echo "<token>" | gh auth login --with-token
+gh auth status
+
+# Anthropic
+export ANTHROPIC_API_KEY=<your key>   # persist via the systemd unit / env file, not .bashrc on shared hosts
+claude --version
+```
+
+#### GitHub token permissions
+
+Create the token at Settings → Developer settings → Personal access tokens →
+Fine-grained tokens. Set **Resource owner** to the org that owns the repos, choose
+**Only select repositories** (the monitored repos), and set a sensible expiration —
+the agent will start failing on every poll once the token expires.
+
+Repository permissions (add the non-default ones via **Add permissions**):
+
+| Permission | Access | Used for |
+|---|---|---|
+| Contents | Read and write | Pushing fix commits and branches |
+| Issues | Read and write | Triage comments, labels (`needs-human`) |
+| Pull requests | Read and write | Listing/viewing PRs, merging, PR comments |
+| Actions | Read-only | `gh run list` / `gh run view` failure logs |
+| Commit statuses | Read-only | CI status on PRs |
+| Workflows | Read and write | Pushing fixes to `.github/workflows/*` files |
+| Metadata | Read-only | Required; added automatically |
+
+Notes:
+
+- There is no "Checks" permission for fine-grained tokens (it is GitHub Apps only), and the
+  agent's `gh` calls should not need it. **However, it may still be a cause of failure:** the
+  PR monitor reads CI status via `gh pr view`, which can include check runs. If PRs appear to
+  have no CI status (or `never_merge_without_green_ci` blocks PRs whose CI is actually green),
+  suspect the missing Checks access. The fallback is a classic token with the `repo` (and
+  `workflow`) scopes, which can read check runs.
+- Without **Workflows**, GitHub rejects any push that touches `.github/workflows/`. Drop it
+  if you don't want the agent editing CI definitions — those failures will then end in `needs-human`.
+- Branch protection / rulesets on `main` (require PR checks) are the way to enforce the
+  merge rules on GitHub's side; the token cannot.
+
+Also configure git identity for commits made by the agent:
+
+```bash
+git config --global user.name "agent"
+git config --global user.email "agent@example.com"
+```
+
+### 6. Clone the agent and the monitored repos
+
+```bash
+# still as the agent user
+mkdir -p ~/repos/github && cd ~/repos/github
+git clone <this-repo-url> agent_in_isolation
+git clone https://github.com/<org>/<monitored-repo>.git
+
+cd agent_in_isolation
+# Ubuntu 24.04 blocks system-wide pip installs (PEP 668), so use a venv
+python3 -m venv .venv                    # needs: sudo apt install -y python3-venv
+.venv/bin/pip install -r requirements.txt
+cp config.yaml config.yaml.local         # set org/name/local_path for each repo
+```
+
+Pre-install each monitored repo's dependencies now (e.g. `npm ci`) **before** enabling
+network isolation — see the next step.
+
+### 7. Smoke-test before isolating the network
+
+```bash
+gh run list --repo <org>/<monitored-repo>
+echo "Say hello" | claude -p
+.venv/bin/python agent.py --config config.yaml.local   # watch agent.log, Ctrl-C when satisfied
+```
+
+### 8. Enable network isolation
+
+```bash
+sudo ./network/iptables.sh
+```
+
+Isolation only allows `github.com`, `api.github.com`, `api.anthropic.com` and DNS.
+Package registries (npm, PyPI, NuGet, etc.) will be **blocked**, so any repo
+dependencies must be installed in step 6. If a monitored repo's CI fix needs new
+dependencies, either allow the registry in `network/iptables.sh` or re-run
+without isolation temporarily. Verify with the commands in
+[Verify isolation](#verify-isolation).
+
+Note: iptables rules are not persistent across reboot. Persist them with
+`sudo apt install iptables-persistent && sudo netfilter-persistent save`, or re-run
+the script on boot.
+
+### 9. Install as a service
+
+Follow [Production (Systemd)](#production-systemd). Then add log rotation:
+
+```bash
+sudo tee /etc/logrotate.d/agent_in_isolation <<'EOF'
+/opt/agent_in_isolation/agent.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+```
+
+> **Check before enabling the unit**: `systemd/agent.service` sets `ProtectHome=true`
+> and `ProtectSystem=strict`. If your repos and `gh`/`claude` credentials live under
+> `/home/agent`, the agent will not be able to read or write them. Either keep the
+> repos elsewhere and add them to `ReadWritePaths=`, or relax `ProtectHome`. Also
+> confirm how `ANTHROPIC_API_KEY` is supplied (the unit currently has
+> `Environment="ANTHROPIC_API_KEY=%i"`, which is a template placeholder);
+> an `EnvironmentFile=` with mode `600` is the safer option.
+
 ## Setup
 
 ### Requirements
@@ -47,7 +263,8 @@ agent_in_isolation/
 # Clone and install dependencies
 git clone <repo> agent_in_isolation
 cd agent_in_isolation
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
 # Configure repos to monitor
 cp config.yaml config.yaml.local
@@ -88,7 +305,8 @@ limits:
 chmod +x agent.py
 
 # Run agent
-python3 agent.py --config config.yaml
+# (or: source .venv/bin/activate, then python3 agent.py ...)
+.venv/bin/python agent.py --config config.yaml
 
 # View logs in real-time
 tail -f agent.log
@@ -100,6 +318,11 @@ tail -f agent.log
 # Copy to system location
 sudo cp -r . /opt/agent_in_isolation
 sudo chown -R agent:agent /opt/agent_in_isolation
+# venvs are not relocatable: recreate it in the new location
+sudo -u agent rm -rf /opt/agent_in_isolation/.venv
+sudo -u agent python3 -m venv /opt/agent_in_isolation/.venv
+sudo -u agent /opt/agent_in_isolation/.venv/bin/pip install -r /opt/agent_in_isolation/requirements.txt
+sudo mkdir -p /etc/agent_in_isolation
 sudo cp config.yaml /etc/agent_in_isolation/config.yaml
 
 # Install systemd unit

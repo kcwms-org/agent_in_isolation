@@ -6,6 +6,13 @@ repos:
       ci_failures: true
       new_issues: true
       pr_monitor: true
+  - org: kcwms-org
+    name: kvcdr-carb-calculator
+    local_path: ~/repos/github/kvcdr-carb-calculator
+    watch:
+      ci_failures: true
+      new_issues: true
+      pr_monitor: true
 
 agent:
   poll_interval_seconds: 300
